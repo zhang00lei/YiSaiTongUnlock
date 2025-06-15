@@ -6,16 +6,17 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"github.com/briandowns/spinner"
-	"github.com/bytedance/gopkg/util/gopool"
-	"github.com/duke-git/lancet/v2/system"
-	"github.com/schollz/progressbar/v3"
 	"io/fs"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/briandowns/spinner"
+	"github.com/bytedance/gopkg/util/gopool"
+	"github.com/schollz/progressbar/v3"
 )
 
 const EDITOR_PATH = "C:\\Users\\pc\\AppData\\Local\\Temp\\GoLand"
@@ -80,7 +81,7 @@ func main() {
 
 		bar := progressbar.Default(int64(len(needFile)))
 		unlockCount := 0
-		poolTemp := gopool.NewPool("Unlock", 200, gopool.NewConfig())
+		poolTemp := gopool.NewPool("Unlock", 5, gopool.NewConfig())
 		for _, filePath := range needFile {
 			wg.Add(1)
 			temp := filePath
@@ -119,17 +120,36 @@ func main() {
 //  @param unlockCfg
 //
 func UnlockFile(pathTemp string) {
-	docPath := pathTemp + ".docx"
-	os.Rename(pathTemp, docPath)
-	unlockPath := filepath.Join(exe_path, "wps.exe")
-	cmd := fmt.Sprintf(`& "%v"  "%v"`, unlockPath, docPath)
-	_, _, err := system.ExecCommand(cmd)
+	// 1. 保存原始时间
+	fileInfo, err := os.Stat(pathTemp)
 	if err != nil {
-		log.Println("Failed to run command:", cmd)
-		fmt.Scanln()
-	} else {
-		dstFilePath := docPath + ".temp"
-		os.Rename(dstFilePath, pathTemp)
+		log.Println("无法获取文件信息:", err)
+		return
+	}
+	originalModTime := fileInfo.ModTime()
+
+	// 2. 原有解密流程
+	docPath := pathTemp + ".docx"
+	if err := os.Rename(pathTemp, docPath); err != nil {
+		log.Println("重命名失败:", err)
+		return
+	}
+
+	unlockPath := filepath.Join(exe_path, "wps.exe")
+	cmd := exec.Command(unlockPath, docPath) // 直接传参，避免字符串解析问题
+	if err := cmd.Run(); err != nil {
+		log.Println("解密失败:", err)
+		return
+	}
+
+	// 3. 恢复文件并重置时间
+	dstFilePath := docPath + ".temp"
+	if err := os.Rename(dstFilePath, pathTemp); err != nil {
+		log.Println("恢复文件名失败:", err)
+		return
+	}
+	if err := os.Chtimes(pathTemp, originalModTime, originalModTime); err != nil {
+		log.Println("恢复时间失败:", err)
 	}
 }
 
@@ -158,7 +178,7 @@ func getAllFileIncludeSubFolder(folder string) ([]string, error) {
 func getNeedUnlockFile(allFiles []string) []string {
 	var result []string
 	var lock sync.Mutex
-	poolTemp := gopool.NewPool("Unlock", 8888, gopool.NewConfig())
+	poolTemp := gopool.NewPool("Unlock", 50, gopool.NewConfig())
 	for _, pathTemp := range allFiles {
 		filePath := pathTemp
 		wg.Add(1)
